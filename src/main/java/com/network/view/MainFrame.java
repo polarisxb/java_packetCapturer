@@ -4,13 +4,28 @@ import com.network.controller.NetworkController;
 import com.network.model.NetworkInterfaceWrapper;
 import com.network.service.NetworkAnalyzer;
 import com.network.service.PacketCaptureService;
+
+import org.jfree.chart.ChartFactory;
+import org.jfree.chart.ChartPanel;
+import org.jfree.chart.JFreeChart;
+import org.jfree.chart.labels.StandardPieSectionLabelGenerator;
+import org.jfree.chart.plot.PiePlot;
+import org.jfree.chart.plot.XYPlot;
 import org.jfree.data.category.DefaultCategoryDataset;
+import org.jfree.data.general.DefaultPieDataset;
+import org.jfree.data.general.PieDataset;
+import org.jfree.data.time.Millisecond;
+import org.jfree.data.time.TimeSeries;
+import org.jfree.data.time.TimeSeriesCollection;
+
+
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
+import java.text.DecimalFormat;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.stream.Collectors;
+
 
 /**
  * 主界面框架
@@ -42,6 +57,13 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
     private JScrollPane scrollPane;
     private JTable packetTable;
     private boolean autoScroll = true;
+
+    //图表
+    private JFreeChart trafficChart;
+    private ChartPanel trafficChartPanel;
+    private JFreeChart protocolChart;
+    private ChartPanel protocolChartPanel;
+
     // endregion
 
     // region 构造函数
@@ -67,6 +89,36 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
         initControlPanel();
         initStatusPanel();
         initAnalysisPanel();
+
+        initTrafficChart();
+        initProtocolChart();
+
+        // 创建主布局分割面板
+        JSplitPane mainSplitPane = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                scrollPane,        // 左侧表格
+                createChartPanel() // 右侧图表
+        );
+        mainSplitPane.setDividerLocation(800); // 初始分隔位置
+        mainSplitPane.setResizeWeight(0.7);    // 左侧占70%宽度
+
+        add(mainSplitPane, BorderLayout.CENTER);
+    }
+    private JPanel createChartPanel() {
+        JPanel chartPanel = new JPanel(new GridLayout(2, 1));
+
+        JPanel trafficPanel = new JPanel(new BorderLayout());
+        trafficPanel.add(trafficChartPanel, BorderLayout.CENTER);
+        trafficPanel.setPreferredSize(new Dimension(600, 300));
+
+        JPanel protocolPanel = new JPanel(new BorderLayout());
+        protocolPanel.add(protocolChartPanel, BorderLayout.CENTER);
+        protocolPanel.setPreferredSize(new Dimension(600, 300));
+
+        chartPanel.add(trafficPanel);
+        chartPanel.add(protocolPanel);
+
+        return chartPanel;
     }
 
     /**
@@ -138,6 +190,86 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
     }
 
     /**
+     * 初始化图表
+     */
+    private void initTrafficChart() {
+        // 创建数据集和图表
+        TimeSeries series = new TimeSeries("实时流量");
+        TimeSeriesCollection dataset = new TimeSeriesCollection(series);
+
+        trafficChart = ChartFactory.createTimeSeriesChart(
+                "实时流量趋势", "时间", "速率 (KB/s)", dataset,
+                true, true, false
+        );
+
+        // 设置全局抗锯齿
+        trafficChart.setTextAntiAlias(true);
+        trafficChart.setAntiAlias(true);
+
+        // 标题字体（备用字体方案）
+        trafficChart.getTitle().setFont(new Font("宋体", Font.BOLD, 16));
+
+        XYPlot plot = trafficChart.getXYPlot();
+        // 坐标轴标签字体
+        plot.getDomainAxis().setLabelFont(new Font("宋体", Font.PLAIN, 12));
+        plot.getRangeAxis().setLabelFont(new Font("宋体", Font.PLAIN, 12));
+
+        // 刻度字体
+        plot.getDomainAxis().setTickLabelFont(new Font("宋体", Font.PLAIN, 10));
+        plot.getRangeAxis().setTickLabelFont(new Font("宋体", Font.PLAIN, 10));
+
+        // 图例字体（如果存在）
+        if (trafficChart.getLegend() != null) {
+            trafficChart.getLegend().setItemFont(new Font("宋体", Font.PLAIN, 12));
+        }
+
+        // 背景与样式
+        plot.setBackgroundPaint(Color.WHITE);
+        plot.getDomainAxis().setAutoRange(true);
+        plot.getDomainAxis().setFixedAutoRange(60000);
+
+        trafficChartPanel = new ChartPanel(trafficChart);
+        trafficChartPanel.setPreferredSize(new Dimension(600, 300));
+    }
+    private void initProtocolChart() {
+        DefaultPieDataset dataset = new DefaultPieDataset();
+
+        protocolChart = ChartFactory.createPieChart(
+                "协议分布", dataset,
+                true, true, false
+        );
+
+        // 全局抗锯齿
+        protocolChart.setTextAntiAlias(true);
+        protocolChart.setAntiAlias(true);
+
+        // 标题字体
+        protocolChart.getTitle().setFont(new Font("宋体", Font.BOLD, 16));
+
+        // 饼图样式
+        PiePlot plot = (PiePlot) protocolChart.getPlot();
+        plot.setLabelFont(new Font("宋体", Font.PLAIN, 12));
+
+        // 自定义标签生成器（解决百分比显示问题）
+        plot.setLabelGenerator(new StandardPieSectionLabelGenerator(
+                "{0}: {1} ({2})",
+                new DecimalFormat("0"),
+                new DecimalFormat("0%")
+        ) {
+            public Font getSectionLabelFont(int section) {
+                return new Font("宋体", Font.PLAIN, 12);
+            }
+        });
+
+        // 颜色预设
+        plot.setSectionPaint("TCP", new Color(59, 65, 198));
+        plot.setSectionPaint("UDP", new Color(89, 187, 131));
+
+        protocolChartPanel = new ChartPanel(protocolChart);
+        protocolChartPanel.setPreferredSize(new Dimension(400, 300));
+    }
+
+    /**
      * 框架通用设置
      */
     private void setupFrame() {
@@ -168,18 +300,39 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
      * 更新协议分布信息
      */
     private void updateProtocolDistribution(NetworkAnalyzer analyzer) {
-        String protocolText = analyzer.getProtocolDistribution().entrySet().stream()
-                .map(e -> e.getKey() + ": " + e.getValue())
-                .collect(Collectors.joining(", "));
-        protocolLabel.setText("协议分布: " + protocolText);
+        // 修改为正确的数据集获取方式
+        PieDataset dataset = ((PiePlot) protocolChart.getPlot()).getDataset();
+
+        if (dataset instanceof DefaultPieDataset) {
+            DefaultPieDataset pieDataset = (DefaultPieDataset) dataset;
+            pieDataset.clear();
+
+            analyzer.getProtocolDistribution().forEach((proto, count) -> {
+                pieDataset.setValue(proto, count);
+            });
+
+            protocolLabel.setText("协议分布: " + analyzer.getProtocolDistribution().toString());
+        }
     }
 
     /**
      * 更新流量统计信息
      */
     private void updateTrafficStatistics(NetworkAnalyzer analyzer) {
-        double mb = analyzer.getTotalBytes() / (1024.0 * 1024.0);
-        trafficLabel.setText(String.format("总流量: %.2f MB", mb));
+        long currentBytes = analyzer.getTotalBytes();
+        double rateKBps = (currentBytes - lastTotalBytes) / 1024.0;
+        lastTotalBytes = currentBytes;
+
+        TimeSeries series = ((TimeSeriesCollection) trafficChart.getXYPlot().getDataset()).getSeries(0);
+        series.addOrUpdate(new Millisecond(), rateKBps);
+
+        SwingUtilities.invokeLater(() -> {
+            trafficChart.fireChartChanged();
+            trafficChartPanel.repaint();
+        });
+
+        double totalMB = currentBytes / (1024.0 * 1024.0);
+        trafficLabel.setText(String.format("总流量: %.2f MB", totalMB));
     }
 
     /**
