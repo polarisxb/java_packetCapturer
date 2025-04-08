@@ -5,7 +5,6 @@ import com.network.model.NetworkInterfaceWrapper;
 import com.network.service.NetworkAnalyzer;
 import com.network.service.PacketCaptureService;
 import org.jfree.data.category.DefaultCategoryDataset;
-
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
@@ -13,63 +12,195 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.stream.Collectors;
 
-public class MainFrame extends JFrame implements PacketTableModel.DataUpdateListener{
-    //核心组件
+/**
+ * 主界面框架
+ * 负责用户界面展示和事件处理
+ */
+public class MainFrame extends JFrame implements PacketTableModel.DataUpdateListener {
+    // region 成员变量
+    // 核心组件
     private final NetworkController controller = new NetworkController();
     private final PacketTableModel tableModel = new PacketTableModel();
     private JComboBox<NetworkInterfaceWrapper> deviceCombo;
-    private PacketCaptureService captureService; // 添加服务引用
+    private PacketCaptureService captureService;
     private JLabel statusLabel = new JLabel("就绪");
-    //图表相关
+
+    // 图表相关
     private final DefaultCategoryDataset trafficDataset = new DefaultCategoryDataset();
     private long lastTotalBytes = 0;
 
-    //定时器
+    // 定时器与线程
     private final Timer analysisTimer = new Timer(1000, e -> updateAnalysis());
     private final ScheduledExecutorService chartExecutor = Executors.newSingleThreadScheduledExecutor();
 
-    private static final int SCROLL_DELAY = 200; // 200ms节流
+    // 界面组件
+    private static final int SCROLL_DELAY = 200;
     private volatile long lastScrollTime = 0;
-
     private JPanel analysisPanel;
     private JLabel protocolLabel;
     private JLabel trafficLabel;
-
-
     private JScrollPane scrollPane;
     private JTable packetTable;
     private boolean autoScroll = true;
+    // endregion
 
+    // region 构造函数
     public MainFrame() {
         initComponents();
         loadNetworkDevices();
+        setupFrame();
+        tableModel.addDataUpdateListener(this);
+        analysisTimer.start();
+    }
+    // endregion
+
+    // region 界面初始化
+    /**
+     * 初始化界面组件
+     */
+    private void initComponents() {
+        setTitle("网络抓包分析系统");
+        setSize(1200, 800);
+        setLayout(new BorderLayout(10, 10));
+
+        initTable();
+        initControlPanel();
+        initStatusPanel();
+        initAnalysisPanel();
+    }
+
+    /**
+     * 初始化数据表格
+     */
+    private void initTable() {
+        packetTable = new JTable(tableModel) {
+            @Override
+            public boolean getScrollableTracksViewportWidth() {
+                return getPreferredSize().width < getParent().getWidth();
+            }
+        };
+        packetTable.setAutoCreateRowSorter(false);
+        packetTable.setFillsViewportHeight(false);
+        packetTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+
+        // 右键菜单设置
+        JPopupMenu popup = new JPopupMenu();
+        JCheckBoxMenuItem autoScrollItem = new JCheckBoxMenuItem("自动滚动", true);
+        autoScrollItem.addActionListener(e -> autoScroll = autoScrollItem.isSelected());
+        popup.add(autoScrollItem);
+        packetTable.setComponentPopupMenu(popup);
+
+        scrollPane = new JScrollPane(packetTable);
+        add(scrollPane, BorderLayout.CENTER);
+    }
+
+    /**
+     * 初始化控制面板
+     */
+    private void initControlPanel() {
+        // 设备选择组件
+        deviceCombo = new JComboBox<>();
+        JButton refreshBtn = new JButton("刷新");
+        refreshBtn.addActionListener(e -> loadNetworkDevices());
+
+        // 控制按钮
+        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        controlPanel.add(new JLabel("网卡选择:"));
+        controlPanel.add(deviceCombo);
+        controlPanel.add(refreshBtn);
+        controlPanel.add(new JButton(startCaptureAction()));
+        controlPanel.add(new JButton(pauseCaptureAction()));
+        controlPanel.add(new JButton(stopCaptureAction()));
+
+        add(controlPanel, BorderLayout.NORTH);
+    }
+
+    /**
+     * 初始化状态面板
+     */
+    private void initStatusPanel() {
+        JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        statusPanel.add(new JLabel("状态:"));
+        statusPanel.add(statusLabel);
+        add(statusPanel, BorderLayout.SOUTH);
+    }
+
+    /**
+     * 初始化分析面板
+     */
+    private void initAnalysisPanel() {
+        analysisPanel = new JPanel(new GridLayout(2, 1));
+        protocolLabel = new JLabel("协议分布: 加载中...");
+        trafficLabel = new JLabel("总流量: 0 MB");
+        analysisPanel.add(protocolLabel);
+        analysisPanel.add(trafficLabel);
+        add(analysisPanel, BorderLayout.EAST);
+    }
+
+    /**
+     * 框架通用设置
+     */
+    private void setupFrame() {
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         pack();
         setLocationRelativeTo(null);
-        tableModel.addDataUpdateListener(this); // 注册监听
-        analysisTimer.start(); // 启动定时更新
     }
+    // endregion
 
+    // region 业务逻辑
+    /**
+     * 更新分析数据（每秒执行）
+     */
     private void updateAnalysis() {
         if (captureService == null) return;
+
         NetworkAnalyzer analyzer = captureService.getAnalyzer();
         if (analyzer != null) {
-            // 更新协议分布
-            double mb = analyzer.getTotalBytes() / (1024.0 * 1024.0);
-            String protocolText = analyzer.getProtocolDistribution().entrySet().stream()
-                    .map(e -> e.getKey() + ": " + e.getValue())
-                    .collect(Collectors.joining(", "));
-            protocolLabel.setText("协议分布: " + protocolText);
-            trafficLabel.setText(String.format("总流量: %.2f MB", mb));
-
-            // 更新流量统计
-
-            trafficLabel.setText(String.format("总流量: %.2f MB", mb));
-        }else{
+            updateProtocolDistribution(analyzer);
+            updateTrafficStatistics(analyzer);
+        } else {
             protocolLabel.setText("协议分布: 等待数据...");
             trafficLabel.setText("总流量: 初始化中");
         }
     }
+
+    /**
+     * 更新协议分布信息
+     */
+    private void updateProtocolDistribution(NetworkAnalyzer analyzer) {
+        String protocolText = analyzer.getProtocolDistribution().entrySet().stream()
+                .map(e -> e.getKey() + ": " + e.getValue())
+                .collect(Collectors.joining(", "));
+        protocolLabel.setText("协议分布: " + protocolText);
+    }
+
+    /**
+     * 更新流量统计信息
+     */
+    private void updateTrafficStatistics(NetworkAnalyzer analyzer) {
+        double mb = analyzer.getTotalBytes() / (1024.0 * 1024.0);
+        trafficLabel.setText(String.format("总流量: %.2f MB", mb));
+    }
+
+    /**
+     * 滚动到底部（节流控制）
+     */
+    private void scrollToBottom() {
+        if (!autoScroll) return;
+
+        SwingUtilities.invokeLater(() -> {
+            JScrollBar vertical = scrollPane.getVerticalScrollBar();
+            if ((vertical.getValue() + vertical.getVisibleAmount()) >= vertical.getMaximum() - 100) {
+                int lastRow = tableModel.getRowCount() - 1;
+                if (lastRow >= 0) {
+                    packetTable.scrollRectToVisible(packetTable.getCellRect(lastRow, 0, true));
+                }
+            }
+        });
+    }
+    // endregion
+
+    // region 事件处理
     @Override
     public void onDataAdded(int count) {
         long now = System.currentTimeMillis();
@@ -79,86 +210,9 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
         }
     }
 
-    private void initComponents() {
-        setTitle("网络抓包分析系统");
-        setSize(1200, 800);
-        setLayout(new BorderLayout(10, 10));
-        
-        packetTable = new JTable(tableModel) {
-            // 禁用单元格绘制器缓存
-            public boolean getScrollableTracksViewportWidth() {
-                return getPreferredSize().width < getParent().getWidth();
-            }
-        };
-        packetTable.setAutoCreateRowSorter(false);
-        packetTable.setFillsViewportHeight(false);
-        packetTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-
-        JPopupMenu popup = new JPopupMenu();
-        JCheckBoxMenuItem autoScrollItem = new JCheckBoxMenuItem("自动滚动", true);
-        autoScrollItem.addActionListener(e -> autoScroll = autoScrollItem.isSelected());
-        popup.add(autoScrollItem);
-
-        packetTable.setComponentPopupMenu(popup);
-
-        // 设备选择组件
-        deviceCombo = new JComboBox<>();
-        JButton refreshBtn = new JButton("刷新");
-        refreshBtn.addActionListener(e -> loadNetworkDevices());
-
-        // 控制按钮
-        JButton startBtn = new JButton(startCaptureAction());
-        JButton pauseBtn = new JButton(pauseCaptureAction());
-        JButton stopBtn = new JButton(stopCaptureAction());
-
-        // 控制面板
-        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        controlPanel.add(new JLabel("网卡选择:"));
-        controlPanel.add(deviceCombo);
-        controlPanel.add(refreshBtn);
-        controlPanel.add(startBtn);
-        controlPanel.add(pauseBtn);
-        controlPanel.add(stopBtn);
-
-        // 数据表格
-        JTable packetTable = new JTable(tableModel);
-        JScrollPane scrollPane = new JScrollPane(packetTable);
-
-        // 主布局
-        setLayout(new BorderLayout());
-        add(controlPanel, BorderLayout.NORTH);
-        add(scrollPane, BorderLayout.CENTER);
-
-        JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        statusPanel.add(new JLabel("状态:"));
-        statusPanel.add(statusLabel);
-
-        packetTable = new JTable(tableModel);
-        scrollPane = new JScrollPane(packetTable);
-        add(statusPanel, BorderLayout.SOUTH);
-
-        scrollPane.getVerticalScrollBar().addAdjustmentListener(e -> {
-            JScrollBar bar = (JScrollBar)e.getSource();
-            autoScroll = (bar.getValue() + bar.getVisibleAmount()) == bar.getMaximum();
-        });
-
-        // 创建分析面板
-        analysisPanel = new JPanel(new GridLayout(2,1));
-
-        // 协议分布显示
-        protocolLabel = new JLabel("协议分布: 加载中...");
-        analysisPanel.add(protocolLabel);
-
-        // 流量统计显示
-        trafficLabel = new JLabel("总流量: 0 MB");
-        analysisPanel.add(trafficLabel);
-
-        // 将分析面板添加到主界面
-        add(analysisPanel, BorderLayout.EAST);
-
-
-    }
-
+    /**
+     * 开始/继续抓包动作
+     */
     private Action startCaptureAction() {
         return new AbstractAction("开始/继续抓包") {
             @Override
@@ -169,26 +223,15 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
                         captureService = new PacketCaptureService(tableModel, MainFrame.this);
                     }
                     captureService.startCapture(selected);
-                    updateStatus("抓包已启动 - 正在捕获: " + selected.toString());
+                    updateStatus("抓包已启动 - 正在捕获: " + selected);
                 }
             }
         };
     }
-    private void scrollToBottom() {
-        if (!autoScroll) return;
 
-        SwingUtilities.invokeLater(() -> {
-            JScrollBar vertical = scrollPane.getVerticalScrollBar();
-            if (vertical.getValue() + vertical.getVisibleAmount() >= vertical.getMaximum() - 100) {
-                int lastRow = tableModel.getRowCount() - 1;
-                if (lastRow >= 0) {
-                    Rectangle rect = packetTable.getCellRect(lastRow, 0, true);
-                    packetTable.scrollRectToVisible(rect);
-                }
-            }
-        });
-    }
-
+    /**
+     * 暂停抓包动作
+     */
     private Action pauseCaptureAction() {
         return new AbstractAction("暂停抓包") {
             @Override
@@ -199,6 +242,10 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
             }
         };
     }
+
+    /**
+     * 停止抓包动作
+     */
     private Action stopCaptureAction() {
         return new AbstractAction("停止抓包") {
             @Override
@@ -209,19 +256,26 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
             }
         };
     }
+    // endregion
 
+    // region 工具方法
+    /**
+     * 加载网络设备列表
+     */
     private void loadNetworkDevices() {
         deviceCombo.removeAllItems();
         controller.getAvailableDevices().forEach(deviceCombo::addItem);
     }
 
+    /**
+     * 更新状态栏信息
+     */
+    public void updateStatus(String message) {
+        SwingUtilities.invokeLater(() -> statusLabel.setText(message));
+    }
+
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new MainFrame().setVisible(true));
     }
-    public void updateStatus(String message) {
-        SwingUtilities.invokeLater(() ->
-                statusLabel.setText(message)
-        );
-    }
+    // endregion
 }
-
