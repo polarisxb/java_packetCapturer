@@ -108,6 +108,7 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
 
         // 控制按钮
         JButton startBtn = new JButton(startCaptureAction());
+        JButton pauseBtn = new JButton(pauseCaptureAction());
         JButton stopBtn = new JButton(stopCaptureAction());
 
         // 控制面板
@@ -116,6 +117,7 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
         controlPanel.add(deviceCombo);
         controlPanel.add(refreshBtn);
         controlPanel.add(startBtn);
+        controlPanel.add(pauseBtn);
         controlPanel.add(stopBtn);
 
         // 数据表格
@@ -158,13 +160,14 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
     }
 
     private Action startCaptureAction() {
-        return new AbstractAction("开始抓包") {
+        return new AbstractAction("开始/继续抓包") {
             @Override
             public void actionPerformed(ActionEvent e) {
                 NetworkInterfaceWrapper selected = (NetworkInterfaceWrapper) deviceCombo.getSelectedItem();
                 if (selected != null) {
-                    // 修改为传递两个参数
-                    captureService = new PacketCaptureService(tableModel, MainFrame.this);
+                    if (captureService == null) {
+                        captureService = new PacketCaptureService(tableModel, MainFrame.this);
+                    }
                     captureService.startCapture(selected);
                     updateStatus("抓包已启动 - 正在捕获: " + selected.toString());
                 }
@@ -186,7 +189,17 @@ public class MainFrame extends JFrame implements PacketTableModel.DataUpdateList
         });
     }
 
-    private Action stopCaptureAction() {  // 添加缺失的方法
+    private Action pauseCaptureAction() {
+        return new AbstractAction("暂停抓包") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (captureService != null) {
+                    captureService.pauseCapture();
+                }
+            }
+        };
+    }
+    private Action stopCaptureAction() {
         return new AbstractAction("停止抓包") {
             @Override
             public void actionPerformed(ActionEvent e) {

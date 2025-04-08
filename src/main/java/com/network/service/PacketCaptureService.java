@@ -26,6 +26,8 @@ public class PacketCaptureService {
     private static final int BUFFER_FLUSH_INTERVAL = 500; // 最大刷新间隔500ms
     private static final int MAX_BATCH_SIZE = 200; // 增大批处理量
     private static final long MAX_BUFFER_TIME = 300; // 最大缓冲时间300ms
+    private NetworkInterfaceWrapper currentDevice;
+    private Thread captureThread;
 
     // 添加正确的构造函数
     public PacketCaptureService(PacketTableModel tableModel, MainFrame mainFrame) {
@@ -38,16 +40,30 @@ public class PacketCaptureService {
 
     public void startCapture(NetworkInterfaceWrapper device) {
         try {
-            PcapNetworkInterface nif = device.getPcapDevice();
-            handle = nif.openLive(65536, PcapNetworkInterface.PromiscuousMode.PROMISCUOUS, 50);
+            // 如果handle已关闭或设备变更，重新初始化
+            if (handle == null || !handle.isOpen() || !currentDevice.equals(device)) {
+                if (handle != null && handle.isOpen()) {
+                    handle.close();
+                }
+                PcapNetworkInterface nif = device.getPcapDevice();
+                handle = nif.openLive(65536, PcapNetworkInterface.PromiscuousMode.PROMISCUOUS, 50);
+                currentDevice = device;
+            }
+
+            // 确保只有一个抓包线程运行
+            if (captureThread != null && captureThread.isAlive()) {
+                return;
+            }
 
             isCapturing = true;
-            new Thread(this::captureLoop).start();
+            captureThread = new Thread(this::captureLoop);
+            captureThread.start();
 
-        } catch (PcapNativeException e) {
+        } catch (Exception e) {
             handleException(e);
         }
     }
+
     private void flushBuffer(List<PacketRecord> buffer) {
         if (!buffer.isEmpty()) {
             List<PacketRecord> copy = new ArrayList<>(buffer);
@@ -85,7 +101,10 @@ public class PacketCaptureService {
         }
         flushBuffer(buffer);
     }
-
+    public void pauseCapture() {
+        isCapturing = false;
+        mainFrame.updateStatus("抓包已暂停");
+    }
     public void stopCapture() {
         isCapturing = false;
         try {
@@ -99,6 +118,9 @@ public class PacketCaptureService {
             handleException(e);
         }
         mainFrame.updateStatus("抓包已停止");
+    }
+    public boolean isCapturing() {
+        return isCapturing;
     }
 
     private void handleException(Exception e) {
