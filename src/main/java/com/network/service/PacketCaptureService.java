@@ -17,65 +17,123 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 数据包捕获服务核心类
- * 负责网络接口管理、抓包线程控制、数据解析和分发
+ * 网络数据包捕获服务核心类
+ * 提供完整的抓包生命周期管理，包含以下功能：
+ * 1. 网络接口设备管理
+ * 2. 抓包线程控制（启动/暂停/停止）
+ * 3. 多协议解析（IP/TCP/UDP/HTTP）
+ * 4. 数据分发（界面更新和统计分析）
+ *
+ * 线程安全设计：
+ * - 使用volatile保证状态标志可见性
+ * - 独立抓包线程避免阻塞UI
+ * - SwingUtilities保证界面更新线程安全
  */
 public class PacketCaptureService {
-    // region 成员变量
-    private PcapHandle handle;                   // Pcap4j抓包句柄
-    private final NetworkAnalyzer analyzer = new NetworkAnalyzer(); // 数据分析器
-    private volatile boolean isCapturing = false;// 抓包状态标志
-    private NetworkInterfaceWrapper currentDevice; // 当前使用的网络设备
-    private Thread captureThread;                // 抓包线程实例
 
-    // 界面相关依赖
-    private final PacketTableModel tableModel;    // 数据表格模型
-    private final MainFrame mainFrame;           // 主界面引用
+    // region ====================== 成员变量 ======================
 
-    // 性能优化参数
-    private static final int MAX_BATCH_SIZE = 200;       // 批量处理最大包数
-    private static final int BUFFER_FLUSH_INTERVAL = 500; // 最大刷新间隔(ms)
-    private static final long MAX_BUFFER_TIME = 300;      // 缓冲时间窗口(ms)
+    /**
+     * Pcap4j抓包句柄（线程封闭在抓包线程中使用）
+     */
+    private PcapHandle handle;
+
+    /**
+     * 数据分析器（线程安全）
+     */
+    private final NetworkAnalyzer analyzer = new NetworkAnalyzer();
+
+    /**
+     * 抓包状态标志（volatile保证多线程可见性）
+     */
+    private volatile boolean isCapturing = false;
+
+    /**
+     * 当前绑定的网络设备包装对象
+     */
+    private NetworkInterfaceWrapper currentDevice;
+
+    /**
+     * 抓包工作线程实例
+     */
+    private Thread captureThread;
+
+    // 界面交互相关
+    /**
+     * 数据表格模型（通过SwingUtilities线程安全更新）
+     */
+    private final PacketTableModel tableModel;
+
+    /**
+     * 主界面引用（用于状态栏更新）
+     */
+    private final MainFrame mainFrame;
+
+    // 性能调优参数
+    /**
+     * 批量处理最大包数（平衡内存和UI刷新频率）
+     */
+    private static final int MAX_BATCH_SIZE = 200;
+
+    /**
+     * 缓冲区强制刷新间隔（单位：毫秒）
+     */
+    private static final int BUFFER_FLUSH_INTERVAL = 500;
+
+    /**
+     * 最大缓冲时间窗口（单位：毫秒）
+     */
+    private static final long MAX_BUFFER_TIME = 300;
+
     // endregion
 
-    // region 构造函数
+    // region ====================== 构造函数 ======================
+
     /**
-     * 构造抓包服务
-     * @param tableModel 数据表格模型（用于更新界面）
-     * @param mainFrame 主界面引用（用于状态更新）
+     * 构造抓包服务实例
+     * @param tableModel 数据表格模型（必须非null）
+     * @param mainFrame 主界面引用（必须非null）
      */
     public PacketCaptureService(PacketTableModel tableModel, MainFrame mainFrame) {
         this.tableModel = tableModel;
         this.mainFrame = mainFrame;
     }
+
     // endregion
 
-    // region 公共方法
+    // region ====================== 公共控制方法 ======================
+
     /**
      * 获取数据分析器实例
+     * @return 已初始化的分析器对象（始终非null）
      */
     public NetworkAnalyzer getAnalyzer() {
         return analyzer;
     }
 
     /**
-     * 启动/恢复抓包
-     * @param device 选择的网络接口设备
+     * 启动/恢复数据包捕获
+     * @param device 选择的网络接口设备（允许为null，使用当前设备）
+     *
+     * 执行流程：
+     * 1. 设备变更检查
+     * 2. 资源重新初始化
+     * 3. 启动抓包线程
      */
     public void startCapture(NetworkInterfaceWrapper device) {
         try {
-            // 设备变更或句柄不可用时重新初始化
+            // 设备变更检查与资源初始化
             if (needReinitializeHandle(device)) {
                 closeExistingHandle();
                 initializeNewHandle(device);
             }
 
-            // 确保单个抓包线程运行
+            // 确保单一线程运行
             if (isCaptureThreadRunning()) {
                 return;
             }
 
-            // 启动抓包线程
+            // 启动新的抓包线程
             startCaptureThread();
         } catch (Exception e) {
             handleException(e);
@@ -83,7 +141,7 @@ public class PacketCaptureService {
     }
 
     /**
-     * 暂停抓包（保持网络接口打开）
+     * 暂停数据包捕获（保持网络接口打开）
      */
     public void pauseCapture() {
         isCapturing = false;
@@ -91,7 +149,7 @@ public class PacketCaptureService {
     }
 
     /**
-     * 完全停止抓包（释放资源）
+     * 完全停止抓包并释放资源
      */
     public void stopCapture() {
         isCapturing = false;
@@ -100,16 +158,25 @@ public class PacketCaptureService {
     }
 
     /**
-     * 获取当前抓包状态
+     * 获取当前捕获状态
+     * @return true表示正在抓包
      */
     public boolean isCapturing() {
         return isCapturing;
     }
+
     // endregion
 
-    // region 核心抓包逻辑
+    // region ====================== 核心抓包逻辑 ======================
+
     /**
-     * 抓包主循环（在独立线程中运行）
+     * 抓包主循环（运行在独立线程中）
+     *
+     * 工作流程：
+     * 1. 初始化数据缓冲区
+     * 2. 循环获取数据包
+     * 3. 解析并缓存数据
+     * 4. 条件触发缓冲区刷新
      */
     private void captureLoop() {
         List<PacketRecord> buffer = new ArrayList<>(MAX_BATCH_SIZE);
@@ -120,10 +187,10 @@ public class PacketCaptureService {
                 Packet packet = handle.getNextPacketEx();
                 if (packet == null) continue;
 
-                // 解析并处理数据包
+                // 协议解析与记录生成
                 processPacket(packet, buffer);
 
-                // 判断是否需要刷新缓冲区
+                // 缓冲区刷新条件判断
                 if (shouldFlushBuffer(buffer, lastFlushTime)) {
                     flushBuffer(buffer);
                     lastFlushTime = System.currentTimeMillis();
@@ -133,25 +200,29 @@ public class PacketCaptureService {
             }
         }
 
-        // 循环结束后强制刷新剩余数据
+        // 退出前强制刷新剩余数据
         flushBuffer(buffer);
     }
 
     /**
      * 处理单个数据包
+     * @param packet 原始数据包对象
+     * @param buffer 目标缓冲区（线程封闭，仅在抓包线程访问）
      */
     private void processPacket(Packet packet, List<PacketRecord> buffer) {
         PacketRecord record = parsePacket(packet);
         analyzer.analyze(record);
         buffer.add(record);
     }
+
     // endregion
 
-    // region 数据包解析
+    // region ====================== 协议解析逻辑 ======================
+
     /**
      * 解析原始数据包为业务对象
-     * @param packet 原始网络数据包
-     * @return 格式化后的业务对象
+     * @param packet Pcap4j原始数据包对象
+     * @return 格式化后的数据包记录
      */
     private PacketRecord parsePacket(Packet packet) {
         PacketRecord.Builder builder = new PacketRecord.Builder(
@@ -160,6 +231,7 @@ public class PacketCaptureService {
                 packet
         );
 
+        // 分层解析协议
         parseTransportLayer(packet, builder);
         parseNetworkLayer(packet, builder);
 
@@ -168,6 +240,8 @@ public class PacketCaptureService {
 
     /**
      * 解析传输层协议（TCP/UDP）
+     * @param packet 原始数据包对象
+     * @param builder 数据包记录建造者
      */
     private void parseTransportLayer(Packet packet, PacketRecord.Builder builder) {
         // TCP协议处理
@@ -177,6 +251,7 @@ public class PacketCaptureService {
                     .dstPort(tcp.getHeader().getDstPort().value())
                     .protocol("TCP");
 
+            // HTTP负载解析
             parseHttpPayload(tcp, builder);
         }
         // UDP协议处理
@@ -202,6 +277,8 @@ public class PacketCaptureService {
 
     /**
      * 解析HTTP协议内容（基于TCP负载）
+     * @param tcp TCP数据包对象
+     * @param builder 数据包记录建造者
      */
     private void parseHttpPayload(TcpPacket tcp, PacketRecord.Builder builder) {
         if (tcp.getPayload() == null) return;
@@ -212,39 +289,51 @@ public class PacketCaptureService {
         try {
             String payloadStr = new String(payload, StandardCharsets.US_ASCII).trim();
 
-            // 检测HTTP请求方法
+            // 请求方法检测
             if (payloadStr.startsWith("GET") || payloadStr.startsWith("POST") ||
                     payloadStr.startsWith("PUT") || payloadStr.startsWith("DELETE")) {
                 parseHttpRequest(payloadStr, builder);
             }
-            // 检测HTTP响应
+            // 响应检测
             else if (payloadStr.startsWith("HTTP/")) {
                 parseHttpResponse(payloadStr, builder);
             }
         } catch (Exception e) {
-            // 忽略非HTTP数据或解析错误
+            // 忽略非HTTP数据或编码异常
         }
     }
+
     // endregion
 
-    // region 工具方法
+    // region ====================== 界面交互方法 ======================
+
     /**
-     * 刷新缓冲区到界面
+     * 刷新缓冲区到界面表格
+     * @param buffer 待刷新的数据包记录集合
      */
     private void flushBuffer(List<PacketRecord> buffer) {
         if (buffer.isEmpty()) return;
 
+        // 创建数据副本避免并发修改
         List<PacketRecord> copy = new ArrayList<>(buffer);
         buffer.clear();
 
+        // 线程安全更新界面
         SwingUtilities.invokeLater(() -> {
             tableModel.addPackets(copy);
             mainFrame.updateStatus("已捕获: " + tableModel.getRowCount() + " 个包");
         });
     }
 
+    // endregion
+
+    // region ====================== 工具方法 ======================
+
     /**
-     * 判断是否需要刷新缓冲区
+     * 判断缓冲区是否需要刷新
+     * @param buffer 当前缓冲区
+     * @param lastFlushTime 上次刷新时间戳
+     * @return true表示需要立即刷新
      */
     private boolean shouldFlushBuffer(List<PacketRecord> buffer, long lastFlushTime) {
         return buffer.size() >= MAX_BATCH_SIZE ||
@@ -252,14 +341,20 @@ public class PacketCaptureService {
     }
 
     /**
-     * 异常统一处理
+     * 统一异常处理
+     * @param e 捕获的异常对象
      */
     private void handleException(Exception e) {
         mainFrame.updateStatus("捕获错误: " + e.getMessage());
     }
+
     // endregion
 
-    // region 私有辅助方法
+    // region ====================== 私有辅助方法 ======================
+
+    /**
+     * 判断是否需要重新初始化抓包句柄
+     */
     private boolean needReinitializeHandle(NetworkInterfaceWrapper device) {
         return handle == null ||
                 !handle.isOpen() ||
@@ -267,22 +362,34 @@ public class PacketCaptureService {
                 !currentDevice.equals(device);
     }
 
+    /**
+     * 关闭现有抓包句柄
+     */
     private void closeExistingHandle() throws NotOpenException {
         if (handle != null && handle.isOpen()) {
             handle.close();
         }
     }
 
+    /**
+     * 初始化新抓包句柄
+     */
     private void initializeNewHandle(NetworkInterfaceWrapper device) throws PcapNativeException {
         PcapNetworkInterface nif = device.getPcapDevice();
         handle = nif.openLive(65536, PcapNetworkInterface.PromiscuousMode.PROMISCUOUS, 50);
         currentDevice = device;
     }
 
+    /**
+     * 检查抓包线程是否运行中
+     */
     private boolean isCaptureThreadRunning() {
         return captureThread != null && captureThread.isAlive();
     }
 
+    /**
+     * 启动新的抓包线程
+     */
     private void startCaptureThread() {
         isCapturing = true;
         captureThread = new Thread(this::captureLoop);
@@ -290,6 +397,9 @@ public class PacketCaptureService {
         captureThread.start();
     }
 
+    /**
+     * 关闭抓包句柄资源
+     */
     private void closeCaptureHandle() {
         try {
             if (handle != null && handle.isOpen()) {
@@ -301,6 +411,9 @@ public class PacketCaptureService {
         }
     }
 
+    /**
+     * 解析HTTP请求报文
+     */
     private void parseHttpRequest(String payloadStr, PacketRecord.Builder builder) {
         String[] lines = payloadStr.split("\\r?\\n");
         if (lines.length == 0) return;
@@ -312,6 +425,9 @@ public class PacketCaptureService {
         }
     }
 
+    /**
+     * 解析HTTP响应报文
+     */
     private void parseHttpResponse(String payloadStr, PacketRecord.Builder builder) {
         String[] lines = payloadStr.split("\\r?\\n");
         if (lines.length > 0) {
@@ -320,10 +436,14 @@ public class PacketCaptureService {
         }
     }
 
+    /**
+     * 抓包错误处理
+     */
     private void handleCaptureError(Exception e) {
         if (isCapturing) {
             handleException(e);
         }
     }
+
     // endregion
 }
